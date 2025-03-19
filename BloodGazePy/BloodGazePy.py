@@ -3,7 +3,7 @@ import subprocess
 from flask import Flask
 
 required_modules = [
-    "colorama", "termcolor", "phonenumbers", "requests", "faker", "urllib.request", "json", "soket", "flask", "pyngrok"
+    "colorama", "termcolor", "phonenumbers", "requests", "faker", "urllib.request", "json", "soket", "flask", "pyngrok", "whois"
 ]
 
 for module in required_modules:
@@ -19,6 +19,7 @@ from termcolor import colored
 import phonenumbers
 import time
 import os
+import shodan
 import flask
 import datetime
 import socket
@@ -27,6 +28,7 @@ from flask import Flask, request, redirect
 from pyngrok import ngrok
 import requests
 import random
+import whois
 from faker import Faker
 from phonenumbers import timezone, carrier, geocoder
 
@@ -54,13 +56,16 @@ banner = '''
    │    4 |  Поиск по номеру(по бд)   │  │     5 |  Поиск по ТГ             │  │       6 | Генератор ЕМАИЛОВ      │
    └──────────────────────────────────┘  └──────────────────────────────────┘  └──────────────────────────────────┘
    ┌──────────────────────────────────┐  ┌──────────────────────────────────┐  ┌──────────────────────────────────┐  
-   │    7 |  Поиск по имейлу          │  │     8 |  Поиск по VK id          │  │       9 | Тотальный поиск        │
+   │    7 |  Поиск по имейлу          │  │     8 |  Поиск по Нику           │  │       9 | Тотальный поиск        │
    └──────────────────────────────────┘  └──────────────────────────────────┘  └──────────────────────────────────┘   
                ┌──────────────────────────────────┐                   ┌──────────────────────────────────┐          
                │    10 |  Поиск по IP             │                   │    11 |  Фишинговая ссылка IP    │                                  
                └──────────────────────────────────┘                   └──────────────────────────────────┘
                                              ┌───────────────────────────┐
-                                             │    12 |   ВЫХОД           │
+                                             │    12 |   Сносер          │
+                                             └───────────────────────────┘
+                                             ┌───────────────────────────┐
+                                             │    13 |   ВЫХОД           │
                                              └───────────────────────────┘
 
 '''
@@ -96,7 +101,8 @@ def search_in_files(search_term):
     if not found:
         print("Data not found in any database.")
 
-
+API_KEY_SHODAN = "qvlTYbZKbb4Ln0YO7EWp61Qt3TH1oO8Z"
+shodan_api = shodan.Shodan(API_KEY_SHODAN)
 def ip_search():
     import urllib.request
     import json
@@ -128,7 +134,33 @@ def ip_search():
     print("│Название хоста:", infoList.get("hostname", "Не указано"))
     print("└Индекс:", infoList.get("postal", "Не указан"))
     print("│")
+    # Додаткові географічні дані
+    try:
+        geo_url = f"https://geocode.xyz/{getIP}?json=1&auth=463988956588585917238x34717"
+        geo_response = urllib.request.urlopen(geo_url)
+        geo_data = json.load(geo_response)
+        print("┌Широта:", geo_data.get("lat", "Не найдена"))
+        print("│Довгота:", geo_data.get("lon", "Не знайдена"))
+        print("└Місце розташування:", geo_data.get("city", "Не вказано"))
+    except:
+        print("Ошибка при получении географической информации.")
 
+    try:
+        query = f'ip:{getIP}'  # Ищем информацию о конкретном IP
+        shodan_results = shodan_api.search(query)
+
+        print("┌Shodan IP информация:")
+        for result in shodan_results['matches']:
+            print(f"│IP: {result['ip_str']}")
+            print(f"│Организация: {result.get('org', 'Неизвестно')}")
+            print(f"│Открытый порт: {result.get('port', 'Неизвестно')}")
+            print(f"│Сервис: {result.get('product', 'Неизвестно')}")
+            print("│---")
+        print("└Всего найдено совпадений:", shodan_results.get('total', 'Неизвестно'))
+    except shodan.APIError as e:
+        print(f"Ошибка Shodan API: {e}")
+
+    print("│")
     print("┌Организация/ASN:", infoList.get("org", "Не указана"))
     print("│IP-тип:", infoList.get("ip", "Не указан").split(":")[0])
     print("└Дата последнего обновления:", infoList.get("time", "Не указана"))
@@ -170,7 +202,7 @@ def ip_search():
     # Проверка IP на AbuseIPDB
     try:
         abuse_url = f"https://api.abuseipdb.com/api/v2/check?ipAddress={getIP}&maxAgeInDays=90"
-        headers = {"Key": "YOUR_ABUSEIPDB_API_KEY", "Accept": "application/json"}
+        headers = {"Key": "b0fd8ab8291c392df4420c47edfd04ca14c7533410f27b2be50516933eee934e59ca1d4d083dab4c", "Accept": "application/json"}
         req = urllib.request.Request(abuse_url, headers=headers)
         with urllib.request.urlopen(req) as response:
             abuse_data = json.load(response)
@@ -181,9 +213,9 @@ def ip_search():
         print("Ошибка при получении данных AbuseIPDB.")
     print("│")
 
-    # WHOIS информация
-    whois_info = whoisIPinfo(getIP)
-    print("WHOIS информация:\n", whois_info)
+    if input("Do you need who is info (y/n)") == 'y':
+        whois_info = whoisIPinfo(getIP)
+        print("WHOIS информация:\n", whois_info)
 
     time.sleep(3)
 
@@ -275,6 +307,47 @@ while True:
                 return socials
 
 
+            # Функция для геолокации (широта и долгота)
+            def get_phone_geo_location(phone):
+                geo_url = f"https://ipinfo.io/{phone}/json"
+                try:
+                    geo_response = requests.get(geo_url)
+                    geo_data = geo_response.json()
+                    return geo_data.get("city", "Не указан"), geo_data.get("region", "Не указан"), geo_data.get(
+                        "country", "Не указана")
+                except requests.exceptions.RequestException:
+                    return "Не удалось получить данные", "Не удалось получить данные", "Не удалось получить данные"
+
+
+            # Функция для проверки репутации номера через Truecaller
+            def check_spam_reputation(phone):
+                try:
+                    # Пример использования Truecaller (это только на примере, настоящий запрос нужно адаптировать по API)
+                    truecaller_url = f"https://www.truecaller.com/search/{phone}"
+                    response = requests.get(truecaller_url)
+                    if "Not found" in response.text:
+                        return "✅ Нет репутации спама."
+                    else:
+                        return "⚠️ Может быть спам номер."
+                except requests.exceptions.RequestException:
+                    return "❌ Ошибка при проверке репутации."
+
+
+            # Функция для WHOIS информации по домену или IP
+            def get_whois_info(domain_or_ip):
+                try:
+                    myCommand = rf"D:\\Dll\\bin\\whois.exe {domain_or_ip}"
+                    whoisInfo = os.popen(myCommand).read()
+
+                    # Проверка на пустой или невалидный результат
+                    if "No whois server is known for this kind of object" in whoisInfo:
+                        return "❌ Нет данных WHOIS для этого объекта"
+
+                    return whoisInfo
+                except Exception as e:
+                    return f"❌ Ошибка WHOIS: {e}"
+
+
             # Ввод номера
             format_number = input(colored("📲 Введи код страны (+7, +380 и т. д.): ", "blue"))
             number = input(colored("☎ Введи номер: ", "blue"))
@@ -314,6 +387,15 @@ while True:
             # Проверка в соцсетях
             socials = check_socials(full)
 
+            # Получение местоположения
+            city, region, country = get_phone_geo_location(full)
+
+            # Проверка на спам
+            spam_status = check_spam_reputation(full)
+
+            # WHOIS информация
+            whois_info = get_whois_info(full)
+
             # Вывод информации
             print(colored("\n--- ℹ Информация о номере ---\n", "green"))
             print(f"📞 Полный номер: {full}")
@@ -325,7 +407,8 @@ while True:
             print(f"✔️ Валидный: {'Да' if is_valid else 'Нет'}")
             print(f"⚠️ Возможный: {'Да' if is_possible else 'Нет'}")
             print(f"📜 Международный формат: {international_format}")
-            print(f"📜 Национальный формат: {national_format}\n")
+            print(f"📜 Национальный формат: {national_format}")
+            print(f"🌍 Местоположение: {city}, {region}, {country}\n")
 
             print(colored("--- 📲 Мессенджеры ---\n", "yellow"))
             for app, link in messengers.items():
@@ -345,6 +428,14 @@ while True:
             print(colored("\n--- 🌐 Поиск информации ---\n", "magenta"))
             print(f"🔎 Google: {google_search}")
             print(f"🔎 Yandex: {yandex_search}")
+
+            # Проверка репутации через Truecaller
+            print(colored("\n--- 🚨 Проверка репутации ---\n", "red"))
+            print(spam_status)
+
+            # WHOIS информация
+            print(colored("\n--- 🧑‍💻 WHOIS информация ---\n", "yellow"))
+            print(whois_info)
 
         if inp == "2":
             data = input("Enter Name or Second name or third name(you shouldn't write it together): ")
@@ -410,8 +501,9 @@ while True:
             search_in_files(data)
 
         if inp == "8":
-            data = input("Enter VK id: ")
-            search_in_files(data)
+            data = input("Enter NikName: ")
+            working_directory = r"D:\PycharmProjects\snoop\.venv\snoop"
+            subprocess.run([sys.executable, "snoop.py", data], check=True, cwd=working_directory)
 
         if inp == "9":
             data = input("Enter something: ")
@@ -424,6 +516,10 @@ while True:
             start_ip_logger()
 
         if inp == "12":
+            working_directory = r"D:\\PycharmProjects\\BloodGaze\\.venv\\Goose"
+            subprocess.run([sys.executable, "gooseprem.py"], check=True, cwd=working_directory)
+
+        if inp == "13":
             break;
     except:
         continue
